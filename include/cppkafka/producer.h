@@ -43,6 +43,7 @@ namespace cppkafka {
 class Topic;
 class Buffer;
 class TopicConfiguration;
+class Message;
 
 /**
  * \brief Producer class
@@ -72,53 +73,65 @@ class TopicConfiguration;
  *
  * // Write using a key on a fixed partition (42)
  * producer.produce(MessageBuilder("some_topic").partition(42).key(key).payload(payload));
+ *
+ * // Flush the produced messages
+ * producer.flush();
  * 
  * \endcode
  */
 class CPPKAFKA_API Producer : public KafkaHandleBase {
 public:
+    using KafkaHandleBase::pause;
     /**
      * The policy to use for the payload. The default policy is COPY_PAYLOAD
      */
     enum class PayloadPolicy {
+        PASSTHROUGH_PAYLOAD = 0,            ///< Rdkafka will not copy nor free the payload.
         COPY_PAYLOAD = RD_KAFKA_MSG_F_COPY, ///< Means RD_KAFKA_MSG_F_COPY
         FREE_PAYLOAD = RD_KAFKA_MSG_F_FREE  ///< Means RD_KAFKA_MSG_F_FREE
     };
 
     /**
-     * Constructs a producer using the given configuration
+     * \brief Constructs a producer using the given configuration
      *
      * \param config The configuration to use
      */
     Producer(Configuration config);
 
     /**
-     * Sets the payload policy
+     * \brief Sets the payload policy
      *
      * \param policy The payload policy to be used
      */
     void set_payload_policy(PayloadPolicy policy);
 
     /**
-     * Returns the current payload policy
+     * \brief Returns the current payload policy
      */
     PayloadPolicy get_payload_policy() const;
 
     /**
-     * Produces a message
+     * \brief Produces a message
      *
-     * \param topic The topic to write the message to
-     * \param partition The partition to write the message to
-     * \param payload The message payload
+     * \param builder The builder class used to compose a message
      */
     void produce(const MessageBuilder& builder);
+    void produce(MessageBuilder&& builder);
+    
+    /**
+     * \brief Produces a message
+     *
+     * \param message The message to be produced
+     */
+    void produce(const Message& message);
+    void produce(Message&& message);
 
     /**
      * \brief Polls on this handle
      *
      * This translates into a call to rd_kafka_poll.
      *
-     * The timeout used on this call is the one configured via Producer::set_timeout.
+     * \remark The timeout used on this call is the one configured via Producer::set_timeout.
      */
     int poll();
 
@@ -136,7 +149,7 @@ public:
      *
      * This translates into a call to rd_kafka_flush.
      *
-     * The timeout used on this call is the one configured via Producer::set_timeout.
+     * \remark The timeout used on this call is the one configured via Producer::set_timeout.
      */
     void flush();
 
@@ -149,6 +162,15 @@ public:
      */
     void flush(std::chrono::milliseconds timeout);
 private:
+#if (RD_KAFKA_VERSION >= RD_KAFKA_HEADERS_SUPPORT_VERSION)
+    void do_produce(const MessageBuilder& builder, MessageBuilder::HeaderListType&& headers);
+    void do_produce(const Message& message, MessageBuilder::HeaderListType&& headers);
+#else
+    void do_produce(const MessageBuilder& builder);
+    void do_produce(const Message& message);
+#endif
+    
+    // Members
     PayloadPolicy message_payload_policy_;
 };
 

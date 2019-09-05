@@ -1,91 +1,94 @@
-#include <mutex>
-#include <chrono>
-#include <condition_variable>
+#include <cstdint>
+#include <iomanip>
+#include <limits>
+#include <sstream>
+#include <random>
 #include "test_utils.h"
-#include "cppkafka/utils/consumer_dispatcher.h"
 
-using std::vector;
-using std::move;
-using std::thread;
-using std::mutex;
-using std::lock_guard;
-using std::unique_lock;
-using std::condition_variable;
-
-using std::chrono::system_clock;
+using std::chrono::duration_cast;
 using std::chrono::milliseconds;
 using std::chrono::seconds;
+using std::chrono::system_clock;
+using std::hex;
+using std::move;
+using std::numeric_limits;
+using std::ostringstream;
+using std::random_device;
+using std::string;
+using std::uniform_int_distribution;
+using std::unique_ptr;
+using std::vector;
 
-using cppkafka::Consumer;
-using cppkafka::ConsumerDispatcher;
-using cppkafka::Message;
-using cppkafka::TopicPartition;
+//==================================================================================
+//                           PollStrategyAdapter
+//==================================================================================
 
-ConsumerRunner::ConsumerRunner(Consumer& consumer, size_t expected, size_t partitions) 
-: consumer_(consumer) {
-    bool booted = false;
-    mutex mtx;
-    condition_variable cond;
-    thread_ = thread([&, expected, partitions]() {
-        consumer_.set_timeout(milliseconds(500));
-        size_t number_eofs = 0;
-        auto start = system_clock::now();
-        ConsumerDispatcher dispatcher(consumer_);
-        dispatcher.run(
-            // Message callback
-            [&](Message msg) {
-                if (number_eofs == partitions) {
-                    messages_.push_back(move(msg));
-                }
-            },
-            // EOF callback
-            [&](ConsumerDispatcher::EndOfFile, const TopicPartition& topic_partition) {
-                if (number_eofs != partitions) {
-                    number_eofs++;
-                    if (number_eofs == partitions) {
-                        lock_guard<mutex> _(mtx);
-                        booted = true;
-                        cond.notify_one();
-                    }
-                }
-            },
-            // Every time there's any event callback
-            [&](ConsumerDispatcher::Event) {
-                if (expected > 0 && messages_.size() == expected) {
-                    dispatcher.stop();
-                }
-                if (expected == 0 && number_eofs >= partitions) {
-                    dispatcher.stop();
-                }
-                if (system_clock::now() - start >= seconds(20)) {
-                    dispatcher.stop();
-                }
-            }
-        );
-        if (number_eofs < partitions) {
-            lock_guard<mutex> _(mtx);
-            booted = true;
-            cond.notify_one();
-        }
-    });
+PollStrategyAdapter::PollStrategyAdapter(Configuration config)
+ : Consumer(config) {
+}
 
-    unique_lock<mutex> lock(mtx);
-    while (!booted) {
-        cond.wait(lock);
+void PollStrategyAdapter::add_polling_strategy(unique_ptr<PollInterface> poll_strategy) {
+    strategy_ = move(poll_strategy);
+}
+
+void PollStrategyAdapter::delete_polling_strategy() {
+    strategy_.reset();
+}
+
+Message PollStrategyAdapter::poll() {
+    if (strategy_) {
+        return strategy_->poll();
+    }
+    return Consumer::poll();
+}
+
+Message PollStrategyAdapter::poll(milliseconds timeout) {
+    if (strategy_) {
+        return strategy_->poll(timeout);
+    }
+    return Consumer::poll(timeout);
+}
+
+vector<Message> PollStrategyAdapter::poll_batch(size_t max_batch_size) {
+    if (strategy_) {
+        return strategy_->poll_batch(max_batch_size);
+    }
+    return Consumer::poll_batch(max_batch_size);
+}
+
+vector<Message> PollStrategyAdapter::poll_batch(size_t max_batch_size, milliseconds timeout) {
+    if (strategy_) {
+        return strategy_->poll_batch(max_batch_size, timeout);
+    }
+    return Consumer::poll_batch(max_batch_size, timeout);
+}
+
+void PollStrategyAdapter::set_timeout(milliseconds timeout) {
+    if (strategy_) {
+        strategy_->set_timeout(timeout);
+    }
+    else {
+        Consumer::set_timeout(timeout);
     }
 }
 
-ConsumerRunner::~ConsumerRunner() {
-    try_join();
-}
-
-const vector<Message>& ConsumerRunner::get_messages() const {
-    return messages_;
-}
-
-void ConsumerRunner::try_join() {
-    if (thread_.joinable()) {
-        thread_.join();
+milliseconds PollStrategyAdapter::get_timeout() {
+    if (strategy_) {
+        return strategy_->get_timeout();
     }
+    return Consumer::get_timeout();
 }
 
+// Misc
+
+string make_consumer_group_id() {
+    ostringstream output;
+    output << hex;
+
+    random_device rd;
+    uniform_int_distribution<uint64_t> distribution(0, numeric_limits<uint64_t>::max());
+    const auto now = duration_cast<seconds>(system_clock::now().time_since_epoch());
+    const auto random_number = distribution(rd);
+    output << now.count() << random_number;
+    return output.str();
+}

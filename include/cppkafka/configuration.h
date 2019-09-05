@@ -42,6 +42,7 @@
 #include "clonable_ptr.h"
 #include "configuration_base.h"
 #include "macros.h"
+#include "event.h"
 
 namespace cppkafka {
 
@@ -62,19 +63,23 @@ class KafkaHandleBase;
 class CPPKAFKA_API Configuration : public ConfigurationBase<Configuration> {
 public:
     using DeliveryReportCallback = std::function<void(Producer& producer, const Message&)>;
-    using OffsetCommitCallback = std::function<void(Consumer& consumer, Error,
+    using OffsetCommitCallback = std::function<void(Consumer& consumer,
+                                                    Error error,
                                                     const TopicPartitionList& topic_partitions)>;
-    using ErrorCallback = std::function<void(KafkaHandleBase& handle, int error,
+    using ErrorCallback = std::function<void(KafkaHandleBase& handle,
+                                             int error,
                                              const std::string& reason)>;
     using ThrottleCallback = std::function<void(KafkaHandleBase& handle,
                                                 const std::string& broker_name,
                                                 int32_t broker_id,
                                                 std::chrono::milliseconds throttle_time)>;
-    using LogCallback = std::function<void(KafkaHandleBase& handle, int level,
+    using LogCallback = std::function<void(KafkaHandleBase& handle,
+                                           int level,
                                            const std::string& facility,
                                            const std::string& message)>;
     using StatsCallback = std::function<void(KafkaHandleBase& handle, const std::string& json)>;
-    using SocketCallback = std::function<int(int domain, int type, int protoco)>;
+    using SocketCallback = std::function<int(int domain, int type, int protocol)>;
+    using BackgroundEventCallback = std::function<void(KafkaHandleBase& handle, Event)>;
 
     using ConfigurationBase<Configuration>::set;
     using ConfigurationBase<Configuration>::get;
@@ -139,13 +144,25 @@ public:
      */
     Configuration& set_socket_callback(SocketCallback callback);
 
+#if RD_KAFKA_VERSION >= RD_KAFKA_ADMIN_API_SUPPORT_VERSION
+    /**
+     * Sets the background event callback (invokes rd_kafka_conf_set_background_event_cb)
+     */
+    Configuration& set_background_event_callback(BackgroundEventCallback callback);
+    
+    /**
+     * Sets the event mask (invokes rd_kafka_conf_set_events)
+     */
+    Configuration& set_events(int events);
+#endif
+
     /** 
      * Sets the default topic configuration
      */
     Configuration& set_default_topic_configuration(TopicConfiguration config);
 
     /**
-     * Returns true iff the given property name has been set
+     * Returns true if the given property name has been set
      */
     bool has_property(const std::string& name) const;
 
@@ -202,6 +219,11 @@ public:
     const SocketCallback& get_socket_callback() const;
 
     /**
+     * Gets the background event callback
+     */
+    const BackgroundEventCallback& get_background_event_callback() const;
+
+    /**
      * Gets the default topic configuration
      */
     const boost::optional<TopicConfiguration>& get_default_topic_configuration() const;
@@ -226,6 +248,7 @@ private:
     LogCallback log_callback_;
     StatsCallback stats_callback_;
     SocketCallback socket_callback_;
+    BackgroundEventCallback background_event_callback_;
 };
 
 } // cppkafka

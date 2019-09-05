@@ -37,15 +37,22 @@
 #include <cppkafka/configuration_option.h>
 #include <cppkafka/consumer.h>
 #include <cppkafka/error.h>
+#include <cppkafka/event.h>
 #include <cppkafka/exceptions.h>
 #include <cppkafka/group_information.h>
+#include <cppkafka/header.h>
+#include <cppkafka/header_list.h>
+#include <cppkafka/header_list_iterator.h>
 #include <cppkafka/kafka_handle_base.h>
 #include <cppkafka/logging.h>
 #include <cppkafka/macros.h>
 #include <cppkafka/message.h>
 #include <cppkafka/message_builder.h>
+#include <cppkafka/message_internal.h>
+#include <cppkafka/message_timestamp.h>
 #include <cppkafka/metadata.h>
 #include <cppkafka/producer.h>
+#include <cppkafka/queue.h>
 #include <cppkafka/topic.h>
 #include <cppkafka/topic_configuration.h>
 #include <cppkafka/topic_partition.h>
@@ -55,5 +62,8 @@
 #include <cppkafka/utils/buffered_producer.h>
 #include <cppkafka/utils/compacted_topic_processor.h>
 #include <cppkafka/utils/consumer_dispatcher.h>
+#include <cppkafka/utils/poll_interface.h>
+#include <cppkafka/utils/poll_strategy_base.h>
+#include <cppkafka/utils/roundrobin_poll_strategy.h>
 
 #endif

@@ -27,11 +27,15 @@
  *
  */
 #include <sstream>
+#include <algorithm>
+#include <cctype>
+#include "macros.h"
 #include "consumer.h"
 #include "exceptions.h"
 #include "logging.h"
 #include "configuration.h"
 #include "topic_partition_list.h"
+#include "detail/callback_invoker.h"
 
 using std::vector;
 using std::string;
@@ -39,6 +43,9 @@ using std::move;
 using std::make_tuple;
 using std::ostringstream;
 using std::chrono::milliseconds;
+using std::toupper;
+using std::equal;
+using std::allocator;
 
 namespace cppkafka {
 
@@ -48,14 +55,14 @@ void Consumer::rebalance_proxy(rd_kafka_t*, rd_kafka_resp_err_t error,
     static_cast<Consumer*>(opaque)->handle_rebalance(error, list);
 }
 
-Consumer::Consumer(Configuration config) 
+Consumer::Consumer(Configuration config)
 : KafkaHandleBase(move(config)) {
     char error_buffer[512];
     rd_kafka_conf_t* config_handle = get_configuration_handle();
     // Set ourselves as the opaque pointer
     rd_kafka_conf_set_opaque(config_handle, this);
     rd_kafka_conf_set_rebalance_cb(config_handle, &Consumer::rebalance_proxy);
-    rd_kafka_t* ptr = rd_kafka_new(RD_KAFKA_CONSUMER, 
+    rd_kafka_t* ptr = rd_kafka_new(RD_KAFKA_CONSUMER,
                                    rd_kafka_conf_dup(config_handle),
                                    error_buffer, sizeof(error_buffer));
     if (!ptr) {
@@ -74,16 +81,19 @@ Consumer::~Consumer() {
         rebalance_error_callback_ = nullptr;
         close();
     }
-    catch (const Exception& ex) {
-        constexpr const char* library_name = "cppkafka";
+    catch (const HandleException& ex) {
         ostringstream error_msg;
         error_msg << "Failed to close consumer [" << get_name() << "]: " << ex.what();
-        const auto& callback = get_configuration().get_log_callback();
-        if (callback) {
-            callback(*this, static_cast<int>(LogLevel::LOG_ERR), library_name, error_msg.str());
+        CallbackInvoker<Configuration::ErrorCallback> error_cb("error", get_configuration().get_error_callback(), this);
+        CallbackInvoker<Configuration::LogCallback> logger_cb("log", get_configuration().get_log_callback(), nullptr);
+        if (error_cb) {
+            error_cb(*this, static_cast<int>(ex.get_error().get_error()), error_msg.str());
+        }
+        else if (logger_cb) {
+            logger_cb(*this, static_cast<int>(LogLevel::LogErr), "cppkafka", error_msg.str());
         }
         else {
-            rd_kafka_log_print(get_handle(), static_cast<int>(LogLevel::LOG_ERR), library_name, error_msg.str().c_str());
+            rd_kafka_log_print(get_handle(), static_cast<int>(LogLevel::LogErr), "cppkafka", error_msg.str().c_str());
         }
     }
 }
@@ -113,16 +123,29 @@ void Consumer::unsubscribe() {
 }
 
 void Consumer::assign(const TopicPartitionList& topic_partitions) {
-    TopicPartitionsListPtr topic_list_handle = convert(topic_partitions);
-    // If the list is empty, then we need to use a null pointer
-    auto handle = topic_partitions.empty() ? nullptr : topic_list_handle.get();
-    rd_kafka_resp_err_t error = rd_kafka_assign(get_handle(), handle);
-    check_error(error);
+    rd_kafka_resp_err_t error;
+    if (topic_partitions.empty()) {
+        error = rd_kafka_assign(get_handle(), nullptr);
+        check_error(error);
+    }
+    else {
+        TopicPartitionsListPtr topic_list_handle = convert(topic_partitions);
+        error = rd_kafka_assign(get_handle(), topic_list_handle.get());
+        check_error(error, topic_list_handle.get());
+    }
 }
 
 void Consumer::unassign() {
     rd_kafka_resp_err_t error = rd_kafka_assign(get_handle(), nullptr);
     check_error(error);
+}
+
+void Consumer::pause() {
+    pause_partitions(get_assignment());
+}
+
+void Consumer::resume() {
+    resume_partitions(get_assignment());
 }
 
 void Consumer::commit() {
@@ -153,7 +176,7 @@ KafkaHandleBase::OffsetTuple Consumer::get_offsets(const TopicPartition& topic_p
     int64_t low;
     int64_t high;
     const string& topic = topic_partition.get_topic();
-    const int partition = topic_partition.get_partition(); 
+    const int partition = topic_partition.get_partition();
     rd_kafka_resp_err_t result = rd_kafka_get_watermark_offsets(get_handle(), topic.data(),
                                                                 partition, &low, &high);
     check_error(result);
@@ -165,7 +188,7 @@ Consumer::get_offsets_committed(const TopicPartitionList& topic_partitions) cons
     TopicPartitionsListPtr topic_list_handle = convert(topic_partitions);
     rd_kafka_resp_err_t error = rd_kafka_committed(get_handle(), topic_list_handle.get(),
                                                    static_cast<int>(get_timeout().count()));
-    check_error(error);
+    check_error(error, topic_list_handle.get());
     return convert(topic_list_handle);
 }
 
@@ -173,8 +196,25 @@ TopicPartitionList
 Consumer::get_offsets_position(const TopicPartitionList& topic_partitions) const {
     TopicPartitionsListPtr topic_list_handle = convert(topic_partitions);
     rd_kafka_resp_err_t error = rd_kafka_position(get_handle(), topic_list_handle.get());
-    check_error(error);
+    check_error(error, topic_list_handle.get());
     return convert(topic_list_handle);
+}
+
+#if (RD_KAFKA_VERSION >= RD_KAFKA_STORE_OFFSETS_SUPPORT_VERSION)
+void Consumer::store_consumed_offsets() const {
+    store_offsets(get_offsets_position(get_assignment()));
+}
+
+void Consumer::store_offsets(const TopicPartitionList& topic_partitions) const {
+    TopicPartitionsListPtr topic_list_handle = convert(topic_partitions);
+    rd_kafka_resp_err_t error = rd_kafka_offsets_store(get_handle(), topic_list_handle.get());
+    check_error(error, topic_list_handle.get());
+}
+#endif
+
+void Consumer::store_offset(const Message& msg) const {
+    rd_kafka_resp_err_t error = rd_kafka_offset_store(msg.get_handle()->rkt, msg.get_partition(), msg.get_offset());
+    check_error(error);
 }
 
 vector<string> Consumer::get_subscription() const {
@@ -220,32 +260,33 @@ Message Consumer::poll() {
 }
 
 Message Consumer::poll(milliseconds timeout) {
-    rd_kafka_message_t* message = rd_kafka_consumer_poll(get_handle(),
-                                                         static_cast<int>(timeout.count()));
-    return message ? Message(message) : Message();
+    return rd_kafka_consumer_poll(get_handle(), static_cast<int>(timeout.count()));
 }
 
-vector<Message> Consumer::poll_batch(size_t max_batch_size) {
-    return poll_batch(max_batch_size, get_timeout());
+std::vector<Message> Consumer::poll_batch(size_t max_batch_size) {
+    return poll_batch(max_batch_size, get_timeout(), allocator<Message>());
 }
 
-vector<Message> Consumer::poll_batch(size_t max_batch_size, milliseconds timeout) {
-    vector<rd_kafka_message_t*> raw_messages(max_batch_size);
-    rd_kafka_queue_t* queue = rd_kafka_queue_get_consumer(get_handle());
-    ssize_t result = rd_kafka_consume_batch_queue(queue, timeout.count(), raw_messages.data(),
-                                                  raw_messages.size());
-    if (result == -1) {
-        check_error(rd_kafka_last_error());
-        // on the off-chance that check_error() does not throw an error
-        result = 0;
-    }
-    vector<Message> output;
-    raw_messages.resize(result);
-    output.reserve(result);
-    for (const auto ptr : raw_messages) {
-        output.emplace_back(ptr);
-    }
-    return output;
+std::vector<Message> Consumer::poll_batch(size_t max_batch_size, milliseconds timeout) {
+    return poll_batch(max_batch_size, timeout, allocator<Message>());
+}
+
+Queue Consumer::get_main_queue() const {
+    Queue queue = Queue::make_queue(rd_kafka_queue_get_main(get_handle()));
+    queue.disable_queue_forwarding();
+    return queue;
+}
+
+Queue Consumer::get_consumer_queue() const {
+    return Queue::make_queue(rd_kafka_queue_get_consumer(get_handle()));
+}
+
+Queue Consumer::get_partition_queue(const TopicPartition& partition) const {
+    Queue queue = Queue::make_queue(rd_kafka_queue_get_partition(get_handle(),
+                                                                 partition.get_topic().c_str(),
+                                                                 partition.get_partition()));
+    queue.disable_queue_forwarding();
+    return queue;
 }
 
 void Consumer::close() {
@@ -261,30 +302,29 @@ void Consumer::commit(const Message& msg, bool async) {
 
 void Consumer::commit(const TopicPartitionList* topic_partitions, bool async) {
     rd_kafka_resp_err_t error;
-    error = rd_kafka_commit(get_handle(),
-                            !topic_partitions ? nullptr : convert(*topic_partitions).get(),
-                            async ? 1 : 0);
-    check_error(error);
+    if (topic_partitions == nullptr) {
+        error = rd_kafka_commit(get_handle(), nullptr, async ? 1 : 0);
+        check_error(error);
+    }
+    else {
+        TopicPartitionsListPtr topic_list_handle = convert(*topic_partitions);
+        error = rd_kafka_commit(get_handle(), topic_list_handle.get(), async ? 1 : 0);
+        check_error(error, topic_list_handle.get());
+    }
 }
 
 void Consumer::handle_rebalance(rd_kafka_resp_err_t error,
                                 TopicPartitionList& topic_partitions) {
     if (error == RD_KAFKA_RESP_ERR__ASSIGN_PARTITIONS) {
-        if (assignment_callback_) {
-            assignment_callback_(topic_partitions);
-        }
+        CallbackInvoker<AssignmentCallback>("assignment", assignment_callback_, this)(topic_partitions);
         assign(topic_partitions);
     }
     else if (error == RD_KAFKA_RESP_ERR__REVOKE_PARTITIONS) {
-        if (revocation_callback_) {
-            revocation_callback_(topic_partitions);
-        }
+        CallbackInvoker<RevocationCallback>("revocation", revocation_callback_, this)(topic_partitions);
         unassign();
     }
     else {
-        if (rebalance_error_callback_) {
-            rebalance_error_callback_(error);
-        }
+        CallbackInvoker<RebalanceErrorCallback>("rebalance error", rebalance_error_callback_, this)(error);
         unassign();
     }
 }

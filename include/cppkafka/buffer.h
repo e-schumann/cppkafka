@@ -31,10 +31,12 @@
 #define CPPKAFKA_BUFFER_H
 
 #include <cstddef>
+#include <array>
 #include <vector>
 #include <iosfwd>
 #include <algorithm>
 #include "macros.h"
+#include "exceptions.h"
 
 namespace cppkafka {
 
@@ -75,6 +77,20 @@ public:
     Buffer(const T* data, size_t size) 
     : data_(reinterpret_cast<const DataType*>(data)), size_(size) {
         static_assert(sizeof(T) == sizeof(DataType), "sizeof(T) != sizeof(DataType)");
+        if ((data_ == nullptr) && (size_ > 0)) {
+            throw Exception("Invalid buffer configuration");
+        }
+    }
+    
+    /**
+     * Constructs a buffer from two iterators in the range [first,last)
+     *
+     * \param first An iterator to the start of data
+     * \param last An iterator to the end of data (not included)
+     */
+    template <typename Iter>
+    Buffer(const Iter first, const Iter last)
+    : Buffer(&*first, std::distance(first, last)) {
     }
 
     /**
@@ -88,9 +104,42 @@ public:
         static_assert(sizeof(T) == sizeof(DataType), "sizeof(T) != sizeof(DataType)");
     }
 
-    // Don't allow construction from temporary vectors
+    /**
+     * Don't allow construction from temporary vectors
+     */
     template <typename T>
     Buffer(std::vector<T>&& data) = delete;
+
+    /**
+     * Constructs a buffer from an array
+     *
+     * \param data The the array to be used as input
+     */
+    template <typename T, size_t N>
+    Buffer(const std::array<T, N>& data)
+    : data_(reinterpret_cast<const DataType*>(data.data())), size_(data.size()) {
+        static_assert(sizeof(T) == sizeof(DataType), "sizeof(T) != sizeof(DataType)");
+    }
+
+    /**
+     * Don't allow construction from temporary arrays
+     */
+    template <typename T, size_t N>
+    Buffer(std::array<T, N>&& data) = delete;
+    
+    /**
+     * Constructs a buffer from a raw array
+     *
+     * \param data The the array to be used as input
+     */
+    template <typename T, size_t N>
+    Buffer(const T(&data)[N])
+    : Buffer(data, N) {
+    }
+    
+     // Don't allow construction from temporary raw arrays
+    template <typename T, size_t N>
+    Buffer(T(&&data)[N]) = delete;
 
     /**
      * \brief Construct a buffer from a const string ref
@@ -100,9 +149,11 @@ public:
      */
     Buffer(const std::string& data); 
 
-    // Don't allow construction from temporary strings
+    /**
+     * Don't allow construction from temporary strings
+     */
     Buffer(std::string&&) = delete;
-
+    
     Buffer(const Buffer&) = delete;
     Buffer(Buffer&&) = default;
     Buffer& operator=(const Buffer&) = delete;
@@ -167,6 +218,14 @@ CPPKAFKA_API bool operator==(const Buffer& lhs, const Buffer& rhs);
  * Compares Buffer objects for inequality 
  */
 CPPKAFKA_API bool operator!=(const Buffer& lhs, const Buffer& rhs);
+
+/**
+ * Compares Buffer objects lexicographically
+ */
+CPPKAFKA_API bool operator<(const Buffer& lhs, const Buffer& rhs);
+CPPKAFKA_API bool operator<=(const Buffer& lhs, const Buffer& rhs);
+CPPKAFKA_API bool operator>(const Buffer& lhs, const Buffer& rhs);
+CPPKAFKA_API bool operator>=(const Buffer& lhs, const Buffer& rhs);
 
 } // cppkafka
 

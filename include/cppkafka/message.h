@@ -39,10 +39,12 @@
 #include "buffer.h"
 #include "macros.h"
 #include "error.h"
+#include "header_list.h"
+#include "message_timestamp.h"
 
 namespace cppkafka {
 
-class MessageTimestamp;
+class Internal;
 
 /**
  * \brief Thin wrapper over a rdkafka message handle
@@ -56,6 +58,12 @@ class MessageTimestamp;
  */
 class CPPKAFKA_API Message {
 public:
+    friend class MessageInternal;
+    using InternalPtr = std::shared_ptr<Internal>;
+#if (RD_KAFKA_VERSION >= RD_KAFKA_HEADERS_SUPPORT_VERSION)
+    using HeaderType = Header<Buffer>;
+    using HeaderListType = HeaderList<HeaderType>;
+#endif
     /**
      * Constructs a message that won't take ownership of the given pointer
      */
@@ -81,7 +89,7 @@ public:
     Message& operator=(Message&& rhs) = default;
 
     /**
-     * Gets the error attribute
+     * \brief Gets the error attribute
      */
     Error get_error() const {
         assert(handle_);
@@ -89,14 +97,14 @@ public:
     }
 
     /**
-     * Utility function to check for get_error() == RD_KAFKA_RESP_ERR__PARTITION_EOF
+     * \brief Utility function to check for get_error() == RD_KAFKA_RESP_ERR__PARTITION_EOF
      */
     bool is_eof() const {
         return get_error() == RD_KAFKA_RESP_ERR__PARTITION_EOF;
     }
 
     /**
-     * Gets the topic that this message belongs to
+     * \brief Gets the topic that this message belongs to
      */
     std::string get_topic() const {
         assert(handle_);
@@ -104,7 +112,7 @@ public:
     }
 
     /**
-     * Gets the partition that this message belongs to
+     * \brief Gets the partition that this message belongs to
      */
     int get_partition() const {
         assert(handle_);
@@ -112,21 +120,54 @@ public:
     }
 
     /**
-     * Gets the message's payload
+     * \brief Gets the message's payload
      */
     const Buffer& get_payload() const {
         return payload_;
     }
+    
+#if (RD_KAFKA_VERSION >= RD_KAFKA_HEADERS_SUPPORT_VERSION)
+    /**
+     * \brief Sets the message's header list.
+     * \note This calls rd_kafka_message_set_headers.
+     */
+    void set_header_list(const HeaderListType& headers) {
+        assert(handle_);
+        if (!headers) {
+            return; //nothing to set
+        }
+        rd_kafka_headers_t* handle_copy = rd_kafka_headers_copy(headers.get_handle());
+        rd_kafka_message_set_headers(handle_.get(), handle_copy);
+        header_list_ = HeaderListType::make_non_owning(handle_copy);
+    }
+    
+    /**
+     * \brief Gets the message's header list
+     */
+    const HeaderListType& get_header_list() const {
+        return header_list_;
+    }
+    
+    /**
+     * \brief Detaches the message's header list
+     */
+    template <typename HeaderType>
+    HeaderList<HeaderType> detach_header_list() {
+        rd_kafka_headers_t* headers_handle;
+        Error error = rd_kafka_message_detach_headers(handle_.get(), &headers_handle);
+        return error ? HeaderList<HeaderType>() : HeaderList<HeaderType>(headers_handle);
+    }
+#endif
 
     /**
-     * Gets the message's key
+     * \brief Gets the message's key
      */
     const Buffer& get_key() const {
         return key_;
     }
 
     /**
-     * Gets the message offset
+     * \brief Gets the message offset
      */
     int64_t get_offset() const {
         assert(handle_);
@@ -134,14 +175,13 @@ public:
     }
 
     /**
-     * \brief Gets the private data.
+     * \brief Gets the private user data.
      *
      * This should only be used on messages produced by a Producer that were set a private data
      * attribute 
      */
     void* get_user_data() const {
-        assert(handle_);
-        return handle_->_private;
+        return user_data_;
     }
 
     /**
@@ -149,20 +189,47 @@ public:
      *
      * If calling rd_kafka_message_timestamp returns -1, then boost::none_t will be returned.
      */
-    inline boost::optional<MessageTimestamp> get_timestamp() const;
+    boost::optional<MessageTimestamp> get_timestamp() const;
+    
+#if RD_KAFKA_VERSION >= RD_KAFKA_MESSAGE_LATENCY_SUPPORT_VERSION
+    /**
+     * \brief Gets the message latency in microseconds as measured from the produce() call.
+     */
+    std::chrono::microseconds get_latency() const {
+        assert(handle_);
+        return std::chrono::microseconds(rd_kafka_message_latency(handle_.get()));
+    }
+#endif
+
+#if (RD_KAFKA_VERSION >= RD_KAFKA_MESSAGE_STATUS_SUPPORT_VERSION)
+    /**
+     * \brief Gets the message persistence status
+     */
+    rd_kafka_msg_status_t get_status() const {
+        assert(handle_);
+        return rd_kafka_message_status(handle_.get());
+    }
+#endif
 
     /**
-     * Indicates whether this message is valid (not null)
+     * \brief Indicates whether this message is valid (not null)
      */
     explicit operator bool() const {
         return handle_ != nullptr;
     }
 
     /**
-     * Gets the rdkafka message handle
+     * \brief Gets the rdkafka message handle
      */
     rd_kafka_message_t* get_handle() const {
         return handle_.get();
+    }
+    
+    /**
+     * \brief Internal private const data accessor (internal use only)
+     */
+    InternalPtr internal() const {
+        return internal_;
     }
 private:
     using HandlePtr = std::unique_ptr<rd_kafka_message_t, decltype(&rd_kafka_message_destroy)>;
@@ -171,53 +238,19 @@ private:
 
     Message(rd_kafka_message_t* handle, NonOwningTag);
     Message(HandlePtr handle);
+    Message& load_internal();
 
     HandlePtr handle_;
     Buffer payload_;
     Buffer key_;
+#if (RD_KAFKA_VERSION >= RD_KAFKA_HEADERS_SUPPORT_VERSION)
+    HeaderListType header_list_;
+#endif
+    void* user_data_;
+    InternalPtr internal_;
 };
 
-/**
- * Represents a message's timestamp
- */
-class CPPKAFKA_API MessageTimestamp {
-public:
-    /**
-     * The timestamp type
-     */
-    enum TimestampType {
-        CREATE_TIME = RD_KAFKA_TIMESTAMP_CREATE_TIME,
-        LOG_APPEND_TIME = RD_KAFKA_TIMESTAMP_LOG_APPEND_TIME
-    };
-
-    /**
-     * Constructs a timestamp object
-     */
-    MessageTimestamp(std::chrono::milliseconds timestamp, TimestampType type);
-
-    /**
-     * Gets the timestamp value
-     */
-    std::chrono::milliseconds get_timestamp() const;
-
-    /**
-     * Gets the timestamp type
-     */
-    TimestampType get_type() const;
-private:
-    std::chrono::milliseconds timestamp_;
-    TimestampType type_;
-};
-
-boost::optional<MessageTimestamp> Message::get_timestamp() const {
-    rd_kafka_timestamp_type_t type = RD_KAFKA_TIMESTAMP_NOT_AVAILABLE;
-    int64_t timestamp = rd_kafka_message_timestamp(handle_.get(), &type);
-    if (timestamp == -1 || type == RD_KAFKA_TIMESTAMP_NOT_AVAILABLE) {
-        return {};
-    }
-    return MessageTimestamp(std::chrono::milliseconds(timestamp),
-                            static_cast<MessageTimestamp::TimestampType>(type));
-}
+using MessageList = std::vector<Message>;
 
 } // cppkafka
 

@@ -5,9 +5,10 @@
 #include <map>
 #include <condition_variable>
 #include <catch.hpp>
-#include "cppkafka/producer.h"
+#include "cppkafka/utils/buffered_producer.h"
 #include "cppkafka/consumer.h"
 #include "cppkafka/utils/compacted_topic_processor.h"
+#include "test_utils.h"
 
 using std::string;
 using std::to_string;
@@ -28,8 +29,6 @@ using std::chrono::seconds;
 using std::chrono::milliseconds;
 
 using namespace cppkafka;
-
-static const string KAFKA_TOPIC = "cppkafka_test1";
 
 static Configuration make_producer_config() {
     Configuration config;
@@ -65,12 +64,16 @@ TEST_CASE("consumption", "[consumer][compacted]") {
     compacted_consumer.set_event_handler([&](const Event& event) {
         events.push_back(event);
     });
-    consumer.subscribe({ KAFKA_TOPIC });
-    consumer.poll();
-    consumer.poll();
-    consumer.poll();
+    consumer.subscribe({ KAFKA_TOPICS[0] });
+    set<int> eof_partitions;
+    while (eof_partitions.size() != static_cast<size_t>(KAFKA_NUM_PARTITIONS)) {
+        Message msg = consumer.poll();
+        if (msg && msg.is_eof()) {
+            eof_partitions.insert(msg.get_partition());
+        }
+    }
 
-    Producer producer(make_producer_config());
+    BufferedProducer<string> producer(make_producer_config());
 
     struct ElementType {
         string value;
@@ -82,13 +85,14 @@ TEST_CASE("consumption", "[consumer][compacted]") {
     };
     for (const auto& element_pair : elements) { 
         const ElementType& element = element_pair.second;
-        MessageBuilder builder(KAFKA_TOPIC);
+        MessageBuilder builder(KAFKA_TOPICS[0]);
         builder.partition(element.partition).key(element_pair.first).payload(element.value);
         producer.produce(builder);
     }
     // Now erase the first element
     string deleted_key = "42";
-    producer.produce(MessageBuilder(KAFKA_TOPIC).partition(0).key(deleted_key));
+    producer.produce(MessageBuilder(KAFKA_TOPICS[0]).partition(0).key(deleted_key));
+    producer.flush();
 
     for (size_t i = 0; i < 10; ++i) {
         compacted_consumer.process_event();

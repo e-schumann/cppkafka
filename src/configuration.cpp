@@ -40,10 +40,8 @@ using std::map;
 using std::move;
 using std::vector;
 using std::initializer_list;
-
-using boost::optional;
-
 using std::chrono::milliseconds;
+using boost::optional;
 
 namespace cppkafka {
 
@@ -52,66 +50,63 @@ namespace cppkafka {
 void delivery_report_callback_proxy(rd_kafka_t*, const rd_kafka_message_t* msg, void *opaque) {
     Producer* handle = static_cast<Producer*>(opaque);
     Message message = Message::make_non_owning((rd_kafka_message_t*)msg);
-    const auto& callback = handle->get_configuration().get_delivery_report_callback();
-    if (callback) {
-        callback(*handle, message);
-    }
+    CallbackInvoker<Configuration::DeliveryReportCallback>
+        ("delivery report", handle->get_configuration().get_delivery_report_callback(), handle)
+        (*handle, message);
 }
 
 void offset_commit_callback_proxy(rd_kafka_t*, rd_kafka_resp_err_t err,
                                   rd_kafka_topic_partition_list_t *offsets, void *opaque) {
     Consumer* handle = static_cast<Consumer*>(opaque);
     TopicPartitionList list = offsets ? convert(offsets) : TopicPartitionList{};
-    const auto& callback = handle->get_configuration().get_offset_commit_callback();
-    if (callback) {
-        callback(*handle, err, list);
-    }
+    CallbackInvoker<Configuration::OffsetCommitCallback>
+        ("offset commit", handle->get_configuration().get_offset_commit_callback(), handle)
+        (*handle, err, list);
 }
 
 void error_callback_proxy(rd_kafka_t*, int err, const char *reason, void *opaque) {
     KafkaHandleBase* handle = static_cast<KafkaHandleBase*>(opaque);
-    const auto& callback = handle->get_configuration().get_error_callback();
-    if (callback) {
-        callback(*handle, err, reason);
-    }
+    CallbackInvoker<Configuration::ErrorCallback>
+        ("error", handle->get_configuration().get_error_callback(), handle)
+        (*handle, err, reason);
 }
 
 void throttle_callback_proxy(rd_kafka_t*, const char* broker_name,
                               int32_t broker_id, int throttle_time_ms, void *opaque) {
     KafkaHandleBase* handle = static_cast<KafkaHandleBase*>(opaque);
-    const auto& callback = handle->get_configuration().get_throttle_callback();
-    if (callback) {
-        callback(*handle, broker_name, broker_id, milliseconds(throttle_time_ms));
-    }
+    CallbackInvoker<Configuration::ThrottleCallback>
+         ("throttle", handle->get_configuration().get_throttle_callback(), handle)
+         (*handle, broker_name, broker_id, milliseconds(throttle_time_ms));
 }
 
 void log_callback_proxy(const rd_kafka_t* h, int level,
                         const char* facility, const char* message) {
     KafkaHandleBase* handle = static_cast<KafkaHandleBase*>(rd_kafka_opaque(h));
-    const auto& callback = handle->get_configuration().get_log_callback();
-    if (callback) {
-        callback(*handle, level, facility, message);
-    }
+    CallbackInvoker<Configuration::LogCallback>
+        ("log", handle->get_configuration().get_log_callback(), nullptr)
+        (*handle, level, facility, message);
 }
 
 int stats_callback_proxy(rd_kafka_t*, char *json, size_t json_len, void *opaque) {
     KafkaHandleBase* handle = static_cast<KafkaHandleBase*>(opaque);
-    const auto& callback = handle->get_configuration().get_stats_callback();
-    if (callback) {
-        callback(*handle, string(json, json + json_len));
-    }
+    CallbackInvoker<Configuration::StatsCallback>
+        ("statistics", handle->get_configuration().get_stats_callback(), handle)
+        (*handle, string(json, json + json_len));
     return 0;
 }
 
 int socket_callback_proxy(int domain, int type, int protocol, void* opaque) {
     KafkaHandleBase* handle = static_cast<KafkaHandleBase*>(opaque);
-    const auto& callback = handle->get_configuration().get_socket_callback();
-    if (callback) {
-        return callback(domain, type, protocol);
-    }
-    else {
-        return -1;
-    }
+    return CallbackInvoker<Configuration::SocketCallback>
+        ("socket", handle->get_configuration().get_socket_callback(), handle)
+        (domain, type, protocol);
+}
+
+void background_event_callback_proxy(rd_kafka_t*, rd_kafka_event_t* event_ptr, void *opaque) {
+    KafkaHandleBase* handle = static_cast<KafkaHandleBase*>(opaque);
+    CallbackInvoker<Configuration::BackgroundEventCallback>
+        ("background_event", handle->get_configuration().get_background_event_callback(), handle)
+        (*handle, Event{event_ptr});
 }
 
 // Configuration
@@ -189,6 +184,19 @@ Configuration& Configuration::set_socket_callback(SocketCallback callback) {
     return *this;
 }
 
+#if RD_KAFKA_VERSION >= RD_KAFKA_ADMIN_API_SUPPORT_VERSION
+Configuration& Configuration::set_background_event_callback(BackgroundEventCallback callback) {
+    background_event_callback_ = move(callback);
+    rd_kafka_conf_set_background_event_cb(handle_.get(), &background_event_callback_proxy);
+    return *this;
+}
+
+Configuration& Configuration::set_events(int events) {
+    rd_kafka_conf_set_events(handle_.get(), events);
+    return *this;
+}
+#endif
+
 Configuration&
 Configuration::set_default_topic_configuration(TopicConfiguration config) {
     default_topic_config_ = std::move(config);
@@ -249,6 +257,11 @@ const Configuration::StatsCallback& Configuration::get_stats_callback() const {
 
 const Configuration::SocketCallback& Configuration::get_socket_callback() const {
     return socket_callback_;
+}
+
+const Configuration::BackgroundEventCallback&
+Configuration::get_background_event_callback() const {
+    return background_event_callback_;
 }
 
 const optional<TopicConfiguration>& Configuration::get_default_topic_configuration() const {

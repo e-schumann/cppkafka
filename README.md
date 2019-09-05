@@ -17,6 +17,8 @@ only supported via the high level consumer API. _cppkafka_ requires **rdkafka >=
 order to use it. Other wrapped functionalities are also provided, like fetching metadata, 
 offsets, etc.
 
+* _cppkafka_ provides message header support. This feature requires **rdkafka >= 0.11.4**.
+
 * _cppkafka_ tries to add minimal overhead over _librdkafka_. A very thin wrapper for _librdkafka_
 messages is used for consumption so there's virtually no overhead at all.
 
@@ -52,45 +54,41 @@ int main() {
 In order to compile _cppkafka_ you need:
 
 * _librdkafka >= 0.9.4_
-* _CMake_
-* A compiler with good C++11 support (e.g. gcc >= 4.8). This was tested successfully on
-_g++ 4.8.3_. 
-* The boost library. _cppkafka_ only requires boost.optional, which is a header only library,
-so this doesn't add any additional runtime dependencies.
+* _CMake >= 3.9.2_
+* A compiler with good C++11 support (e.g. gcc >= 4.8). This was tested successfully on _g++ 4.8.3_. 
+* The boost library (for boost::optional)
 
 Now, in order to build, just run:
 
 ```Shell
 mkdir build
 cd build
-cmake ..
+cmake <OPTIONS> ..
 make
+make install
 ```
 
 ## CMake options
 
-If you have installed _librdkafka_ on a non standard directory, you can use the
-`RDKAFKA_ROOT_DIR` cmake parameter when configuring the project:
+The following cmake options can be specified:
+* `RDKAFKA_ROOT` : Specify a different librdkafka install directory.
+* `RDKAFKA_DIR` : Specify a different directory where the RdKafkaConfig.cmake is installed.
+* `BOOST_ROOT` : Specify a different Boost install directory.
+* `CPPKAFKA_CMAKE_VERBOSE` : Generate verbose output. Default is `OFF`.
+* `CPPKAFKA_BUILD_SHARED` : Build cppkafka as a shared library. Default is `ON`.
+* `CPPKAFKA_DISABLE_TESTS` : Disable build of cppkafka tests. Default is  `OFF`.
+* `CPPKAFKA_DISABLE_EXAMPLES` : Disable build of cppkafka examples. Default is `OFF`.
+* `CPPKAFKA_BOOST_STATIC_LIBS` : Link with Boost static libraries. Default is `ON`.
+* `CPPKAFKA_BOOST_USE_MULTITHREADED` : Use Boost multi-threaded libraries. Default is `ON`.
+* `CPPKAFKA_RDKAFKA_STATIC_LIB` : Link to Rdkafka static library. Default is `OFF`.
+* `CPPKAFKA_CONFIG_DIR` : Install location of the cmake configuration files. Default is `lib/cmake/cppkafka`.
+* `CPPKAFKA_PKGCONFIG_DIR` : Install location of the .pc file. Default is `share/pkgconfig`.
+* `CPPKAFKA_EXPORT_PKGCONFIG` : Generate `cppkafka.pc` file. Default is `ON`.
+* `CPPKAFKA_EXPORT_CMAKE_CONFIG` : Generate CMake config, target and version files. Default is `ON`.
 
+Example:
 ```Shell
-cmake .. -DRDKAFKA_ROOT_DIR=/some/other/dir
-```
-
-Note that the `RDKAFKA_ROOT_DIR` must contain the following structure:
-
-```Shell
-${RDKAFKA_ROOT_DIR}/
-                   |
-                   + include/librdkafka/rdkafka.h
-                   |
-                   + lib/librdkafka.a
-```
-
-By default, a shared library will be built. If you want to perform a static build,
-use the `CPPKAFKA_BUILD_SHARED` parameter:
-
-```Shell
-cmake .. -DCPPKAFKA_BUILD_SHARED=0
+cmake -DRDKAFKA_ROOT=/some/other/dir -DCPPKAFKA_BUILD_SHARED=OFF ...
 ```
 
 # Using
@@ -100,6 +98,13 @@ If you want to use _cppkafka_, you'll need to link your application with:
 * _cppkafka_
 * _rdkafka_
 
+If using CMake, this is simplified by doing:
+```cmake
+find_package(CppKafka REQUIRED)
+
+target_link_libraries(<YourLibrary> CppKafka::cppkafka)
+```
+
 # Documentation
 
 You can generate the documentation by running `make docs` inside the build directory. This requires
@@ -108,4 +113,3 @@ _Doxygen_ to be installed. The documentation will be written in html format at
 
 Make sure to check the [wiki](https://github.com/mfontanini/cppkafka/wiki) which includes
 some documentation about the project and some of its features.
-

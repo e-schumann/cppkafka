@@ -34,6 +34,7 @@
 #include <functional>
 #include <thread>
 #include "../consumer.h"
+#include "../exceptions.h"
 
 namespace cppkafka {
 
@@ -46,6 +47,7 @@ public:
     static const TimeUnit DEFAULT_INITIAL_BACKOFF;
     static const TimeUnit DEFAULT_BACKOFF_STEP;
     static const TimeUnit DEFAULT_MAXIMUM_BACKOFF;
+    static const size_t DEFAULT_MAXIMUM_RETRIES;
 
     /**
      * The backoff policy to use
@@ -56,7 +58,7 @@ public:
     };
 
     /**
-     * Constructs an instance of backoff perform
+     * Constructs an instance of backoff performer
      * 
      * By default, the linear backoff policy is used
      */
@@ -97,6 +99,15 @@ public:
      * \param value The value to be used
      */
     void set_maximum_backoff(TimeUnit value);
+    
+    /**
+     * \brief Sets the maximum number of retries for the commit operation
+     *
+     * \param value The number of retries before giving up
+     *
+     * \remark Setting value to 0 is equivalent to 1, i.e. it will try at least once
+     */
+    void set_maximum_retries(size_t value);
 
     /**
      * \brief Executes an action and backs off if it fails
@@ -108,13 +119,13 @@ public:
     template <typename Functor>
     void perform(const Functor& callback) {
         TimeUnit backoff = initial_backoff_;
-        while (true) {
+        size_t retries = maximum_retries_;
+        while (retries--) {
             auto start = std::chrono::steady_clock::now();
             // If the callback returns true, we're done
             if (callback()) {
-                return;
+                return; //success
             }
-
             auto end = std::chrono::steady_clock::now();
             auto time_elapsed = end - start;
             // If we still have time left, then sleep
@@ -124,6 +135,8 @@ public:
             // Increase out backoff depending on the policy being used
             backoff = increase_backoff(backoff);
         }
+        // No more retries left or we have a terminal error.
+        throw ActionTerminatedException("Commit failed: no more retries.");
     }
 private:
     TimeUnit increase_backoff(TimeUnit backoff);
@@ -132,6 +145,7 @@ private:
     TimeUnit backoff_step_;
     TimeUnit maximum_backoff_;
     BackoffPolicy policy_;
+    size_t maximum_retries_;
 };
 
 } // cppkafka

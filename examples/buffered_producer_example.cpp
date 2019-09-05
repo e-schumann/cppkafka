@@ -1,7 +1,7 @@
 #include <stdexcept>
 #include <iostream>
 #include <boost/program_options.hpp>
-#include "cppkafka/producer.h"
+#include "cppkafka/utils/buffered_producer.h"
 #include "cppkafka/configuration.h"
 
 using std::string;
@@ -11,10 +11,11 @@ using std::cin;
 using std::cout;
 using std::endl;
 
-using cppkafka::Producer;
+using cppkafka::BufferedProducer;
 using cppkafka::Configuration;
 using cppkafka::Topic;
 using cppkafka::MessageBuilder;
+using cppkafka::Message;
 
 namespace po = boost::program_options;
 
@@ -62,7 +63,18 @@ int main(int argc, char* argv[]) {
     };
 
     // Create the producer
-    Producer producer(config);
+    BufferedProducer<string> producer(config);
+
+    // Set a produce success callback
+    producer.set_produce_success_callback([](const Message& msg) {
+        cout << "Successfully produced message with payload " << msg.get_payload() << endl;
+    });
+    // Set a produce failure callback
+    producer.set_produce_failure_callback([](const Message& msg) {
+        cout << "Failed to produce message with payload " << msg.get_payload() << endl;
+        // Return false so we stop trying to produce this message
+        return false;
+    });
 
     cout << "Producing messages into topic " << topic_name << endl;
 
@@ -72,7 +84,13 @@ int main(int argc, char* argv[]) {
         // Set the payload on this builder
         builder.payload(line);
 
-        // Actually produce the message we've built
-        producer.produce(builder);
+        // Add the message we've built to the buffered producer
+        producer.add_message(builder);
+
+        // Now flush so we:
+        // * emit the buffered message
+        // * poll the producer so we dispatch on delivery report callbacks and
+        // therefore get the produce failure/success callbacks
+        producer.flush();
     }
 }
